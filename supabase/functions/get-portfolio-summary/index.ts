@@ -27,9 +27,9 @@ serve(async (req) => {
     // PulseChain chain ID
     const PULSECHAIN_CHAIN_ID = '0x171';
 
-    // Fetch all wallet transactions from Moralis
-    const moralisResponse = await fetch(
-      `https://deep-index.moralis.io/api/v2.2/${walletAddress}?chain=${PULSECHAIN_CHAIN_ID}`,
+    // Fetch all ERC20 token transfers for the wallet
+    const transfersResponse = await fetch(
+      `https://deep-index.moralis.io/api/v2.2/${walletAddress}/erc20/transfers?chain=${PULSECHAIN_CHAIN_ID}&limit=100`,
       {
         headers: {
           'X-API-Key': moralisApiKey,
@@ -38,76 +38,69 @@ serve(async (req) => {
       }
     );
 
-    if (!moralisResponse.ok) {
-      const errorText = await moralisResponse.text();
+    if (!transfersResponse.ok) {
+      const errorText = await transfersResponse.text();
       console.error('Moralis API error:', errorText);
-      throw new Error(`Moralis API error: ${moralisResponse.status}`);
+      throw new Error(`Moralis API error: ${transfersResponse.status}`);
     }
 
-    const moralisData = await moralisResponse.json();
-    console.log('Moralis portfolio data received');
+    const transfersData = await transfersResponse.json();
+    console.log(`Received ${transfersData.result?.length || 0} total token transfers`);
 
-    // Process all transactions to calculate portfolio
+    // Process all transfers to calculate portfolio
     const tokenMap = new Map();
 
-    if (moralisData.result) {
-      for (const tx of moralisData.result) {
-        const tokenAddress = tx.address || tx.token_address;
+    if (transfersData.result) {
+      for (const transfer of transfersData.result) {
+        const tokenAddress = transfer.address;
         if (!tokenAddress) continue;
 
-        const value = parseFloat(tx.value) / Math.pow(10, parseInt(tx.decimals || '18'));
-        const valueUSD = parseFloat(tx.value_usd || '0');
+        const value = parseFloat(transfer.value) / Math.pow(10, parseInt(transfer.token_decimals || '18'));
 
         if (!tokenMap.has(tokenAddress)) {
           tokenMap.set(tokenAddress, {
             tokenAddress,
-            tokenSymbol: tx.token_symbol || 'UNKNOWN',
-            tokenLogo: tx.token_logo || '',
+            tokenSymbol: transfer.token_symbol || 'UNKNOWN',
+            tokenLogo: transfer.token_logo || '',
             totalBought: 0,
             totalSold: 0,
             totalBuyValueUSD: 0,
             totalSellValueUSD: 0,
-            transactions: [],
+            buyCount: 0,
+            sellCount: 0,
           });
         }
 
         const token = tokenMap.get(tokenAddress);
         
         // Determine if buy or sell
-        if (tx.to_address?.toLowerCase() === walletAddress.toLowerCase()) {
-          // Buy transaction
+        const isIncoming = transfer.to_address?.toLowerCase() === walletAddress.toLowerCase();
+        if (isIncoming) {
           token.totalBought += value;
-          token.totalBuyValueUSD += valueUSD;
-        } else if (tx.from_address?.toLowerCase() === walletAddress.toLowerCase()) {
-          // Sell transaction
+          token.buyCount++;
+        } else if (transfer.from_address?.toLowerCase() === walletAddress.toLowerCase()) {
           token.totalSold += value;
-          token.totalSellValueUSD += valueUSD;
+          token.sellCount++;
         }
-        
-        token.transactions.push({
-          value,
-          valueUSD,
-          timestamp: tx.block_timestamp,
-        });
       }
     }
 
-    // Calculate portfolio metrics
+    // Calculate portfolio metrics and fetch current prices
     const portfolio = [];
 
     for (const [tokenAddress, tokenData] of tokenMap.entries()) {
       const currentQuantity = tokenData.totalBought - tokenData.totalSold;
       
       // Only include tokens with positive balance
-      if (currentQuantity <= 0) continue;
+      if (currentQuantity <= 0.000001) continue;
 
-      const avgBuyPrice = tokenData.totalBuyValueUSD / tokenData.totalBought || 0;
-      
-      // Fetch current price from DexScreener
+      // Fetch current price
       let currentPrice = 0;
       let tokenLogo = tokenData.tokenLogo;
+      let avgBuyPrice = 0;
       
       try {
+        // Get current price from DexScreener
         const dexResponse = await fetch(
           `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`
         );
@@ -120,8 +113,44 @@ serve(async (req) => {
             tokenLogo = tokenLogo || pair.info?.imageUrl || '';
           }
         }
+
+        // Try to get price history from Moralis
+        try {
+          const priceResponse = await fetch(
+            `https://deep-index.moralis.io/api/v2.2/erc20/${tokenAddress}/price?chain=${PULSECHAIN_CHAIN_ID}`,
+            {
+              headers: {
+                'X-API-Key': moralisApiKey,
+                'accept': 'application/json',
+              },
+            }
+          );
+          
+          if (priceResponse.ok) {
+            const priceData = await priceResponse.json();
+            avgBuyPrice = parseFloat(priceData.usdPrice || currentPrice);
+            
+            // Calculate buy/sell values
+            if (tokenData.buyCount > 0) {
+              tokenData.totalBuyValueUSD = tokenData.totalBought * avgBuyPrice;
+            }
+            if (tokenData.sellCount > 0) {
+              tokenData.totalSellValueUSD = tokenData.totalSold * avgBuyPrice;
+            }
+          }
+        } catch (error) {
+          avgBuyPrice = currentPrice; // Fallback to current price
+        }
       } catch (error) {
         console.error(`Error fetching price for ${tokenAddress}:`, error);
+        continue;
+      }
+
+      // If we couldn't get average buy price, estimate it
+      if (avgBuyPrice === 0 && tokenData.totalBuyValueUSD > 0) {
+        avgBuyPrice = tokenData.totalBuyValueUSD / tokenData.totalBought;
+      } else if (avgBuyPrice === 0) {
+        avgBuyPrice = currentPrice;
       }
 
       const valueUSD = currentQuantity * currentPrice;

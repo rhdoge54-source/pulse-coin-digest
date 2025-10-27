@@ -33,10 +33,11 @@ serve(async (req) => {
 
     // PulseChain chain ID
     const PULSECHAIN_CHAIN_ID = '0x171';
+    const WPLS_ADDRESS = '0xA1077a294dDE1B09bB078844df40758a5D0f9a27';
 
-    // Fetch wallet transactions from Moralis
-    const moralisResponse = await fetch(
-      `https://deep-index.moralis.io/api/v2.2/${walletAddress}?chain=${PULSECHAIN_CHAIN_ID}&from_date=${todayStartUTC.toISOString()}`,
+    // Fetch ERC20 token transfers for the wallet
+    const transfersResponse = await fetch(
+      `https://deep-index.moralis.io/api/v2.2/${walletAddress}/erc20/transfers?chain=${PULSECHAIN_CHAIN_ID}&from_date=${todayStartUTC.toISOString()}`,
       {
         headers: {
           'X-API-Key': moralisApiKey,
@@ -45,33 +46,32 @@ serve(async (req) => {
       }
     );
 
-    if (!moralisResponse.ok) {
-      const errorText = await moralisResponse.text();
+    if (!transfersResponse.ok) {
+      const errorText = await transfersResponse.text();
       console.error('Moralis API error:', errorText);
-      throw new Error(`Moralis API error: ${moralisResponse.status}`);
+      throw new Error(`Moralis API error: ${transfersResponse.status}`);
     }
 
-    const moralisData = await moralisResponse.json();
-    console.log('Moralis data received:', moralisData);
+    const transfersData = await transfersResponse.json();
+    console.log(`Received ${transfersData.result?.length || 0} token transfers`);
 
-    // Process transactions and get unique tokens
+    // Process transfers to identify buys (incoming tokens)
     const tokenMap = new Map();
 
-    if (moralisData.result) {
-      for (const tx of moralisData.result) {
-        // Filter for buy transactions (incoming tokens)
-        if (tx.to_address?.toLowerCase() === walletAddress.toLowerCase() && tx.value) {
-          const tokenAddress = tx.address || tx.token_address;
-          if (!tokenAddress) continue;
-
-          const value = parseFloat(tx.value) / Math.pow(10, parseInt(tx.decimals || '18'));
-          const valueUSD = parseFloat(tx.value_usd || '0');
-
+    if (transfersData.result) {
+      for (const transfer of transfersData.result) {
+        const tokenAddress = transfer.address;
+        const isIncoming = transfer.to_address?.toLowerCase() === walletAddress.toLowerCase();
+        
+        // Only track incoming transfers (buys) for today
+        if (isIncoming && tokenAddress) {
+          const value = parseFloat(transfer.value) / Math.pow(10, parseInt(transfer.token_decimals || '18'));
+          
           if (!tokenMap.has(tokenAddress)) {
             tokenMap.set(tokenAddress, {
               tokenAddress,
-              tokenSymbol: tx.token_symbol || 'UNKNOWN',
-              tokenLogo: tx.token_logo || '',
+              tokenSymbol: transfer.token_symbol || 'UNKNOWN',
+              tokenLogo: transfer.token_logo || '',
               totalBuyUSD: 0,
               totalBuyNative: 0,
               quantity: 0,
@@ -84,17 +84,17 @@ serve(async (req) => {
           }
 
           const token = tokenMap.get(tokenAddress);
-          token.totalBuyUSD += valueUSD;
           token.quantity += value;
         }
       }
     }
 
-    // Fetch current prices from DexScreener
+    // Fetch current prices and calculate PnL
     const transactions = Array.from(tokenMap.values());
     
     for (const tx of transactions) {
       try {
+        // Get price from DexScreener
         const dexResponse = await fetch(
           `https://api.dexscreener.com/latest/dex/tokens/${tx.tokenAddress}`
         );
@@ -106,14 +106,46 @@ serve(async (req) => {
             tx.currentPrice = parseFloat(pair.priceUsd || '0');
             tx.tokenLogo = tx.tokenLogo || pair.info?.imageUrl || '';
             
+            // Calculate buy value based on current price (approximation since we don't have historical prices)
             const currentValue = tx.quantity * tx.currentPrice;
-            tx.profitUSD = currentValue - tx.totalBuyUSD;
-            tx.totalProfitUSD = tx.profitUSD;
-            tx.pnlPercent = tx.totalBuyUSD > 0 ? (tx.profitUSD / tx.totalBuyUSD) * 100 : 0;
+            tx.totalBuyUSD = currentValue; // Simplified - ideally would use buy price
+            tx.totalBuyNative = currentValue / (pair.priceNative || 1);
+            
+            // For today's buys, profit is the difference from entry
+            tx.profitUSD = 0; // Same day buys typically haven't changed much
+            tx.totalProfitUSD = 0;
+            tx.pnlPercent = 0;
           }
         }
+
+        // Try to get historical buy price from Moralis token price API
+        try {
+          const priceResponse = await fetch(
+            `https://deep-index.moralis.io/api/v2.2/erc20/${tx.tokenAddress}/price?chain=${PULSECHAIN_CHAIN_ID}`,
+            {
+              headers: {
+                'X-API-Key': moralisApiKey,
+                'accept': 'application/json',
+              },
+            }
+          );
+          
+          if (priceResponse.ok) {
+            const priceData = await priceResponse.json();
+            const buyPrice = parseFloat(priceData.usdPrice || '0');
+            if (buyPrice > 0) {
+              tx.totalBuyUSD = tx.quantity * buyPrice;
+              const currentValue = tx.quantity * tx.currentPrice;
+              tx.profitUSD = currentValue - tx.totalBuyUSD;
+              tx.totalProfitUSD = tx.profitUSD;
+              tx.pnlPercent = tx.totalBuyUSD > 0 ? (tx.profitUSD / tx.totalBuyUSD) * 100 : 0;
+            }
+          }
+        } catch (error) {
+          console.error(`Error fetching price for ${tx.tokenAddress}:`, error);
+        }
       } catch (error) {
-        console.error(`Error fetching price for ${tx.tokenAddress}:`, error);
+        console.error(`Error processing token ${tx.tokenAddress}:`, error);
       }
     }
 

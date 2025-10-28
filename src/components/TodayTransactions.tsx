@@ -12,19 +12,11 @@ interface TokenTransaction {
   totalBuyUSD: number;
   totalBuyNative: number;
   quantity: number;
-  soldQuantity: number;
   currentPrice: number;
   profitUSD: number;
   totalProfitUSD: number;
   pnlPercent: number;
   chartLink: string;
-}
-
-interface DailySummary {
-  totalBuyUSD: number;
-  totalCurrentValue: number;
-  totalProfitUSD: number;
-  totalProfitPercent: number;
 }
 
 interface TodayTransactionsProps {
@@ -33,7 +25,6 @@ interface TodayTransactionsProps {
 
 export const TodayTransactions = ({ walletAddress }: TodayTransactionsProps) => {
   const [transactions, setTransactions] = useState<TokenTransaction[]>([]);
-  const [summary, setSummary] = useState<DailySummary>({ totalBuyUSD: 0, totalCurrentValue: 0, totalProfitUSD: 0, totalProfitPercent: 0 });
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
 
@@ -47,7 +38,6 @@ export const TodayTransactions = ({ walletAddress }: TodayTransactionsProps) => 
       if (error) throw error;
       
       setTransactions(data?.transactions || []);
-      setSummary(data?.summary || { totalBuyUSD: 0, totalCurrentValue: 0, totalProfitUSD: 0, totalProfitPercent: 0 });
       setLastUpdate(new Date());
       
       toast({
@@ -110,39 +100,14 @@ export const TodayTransactions = ({ walletAddress }: TodayTransactionsProps) => 
         </div>
       </div>
 
-      {/* Daily Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <div className="bg-card/50 rounded-lg p-4 border border-border/30">
-          <div className="text-sm text-muted-foreground mb-1">Total Pembelian</div>
-          <div className="text-lg font-semibold">{formatCurrency(summary.totalBuyUSD)}</div>
-        </div>
-        <div className="bg-card/50 rounded-lg p-4 border border-border/30">
-          <div className="text-sm text-muted-foreground mb-1">Nilai Saat Ini</div>
-          <div className="text-lg font-semibold">{formatCurrency(summary.totalCurrentValue)}</div>
-        </div>
-        <div className="bg-card/50 rounded-lg p-4 border border-border/30">
-          <div className="text-sm text-muted-foreground mb-1">Total Profit (USDT)</div>
-          <div className={`text-lg font-semibold ${summary.totalProfitUSD >= 0 ? 'text-success' : 'text-destructive'}`}>
-            {formatCurrency(summary.totalProfitUSD)}
-          </div>
-        </div>
-        <div className="bg-card/50 rounded-lg p-4 border border-border/30">
-          <div className="text-sm text-muted-foreground mb-1">Profit Hari Ini</div>
-          <div className={`text-lg font-semibold ${summary.totalProfitPercent >= 0 ? 'text-success' : 'text-destructive'}`}>
-            {summary.totalProfitPercent >= 0 ? '+' : ''}{summary.totalProfitPercent.toFixed(2)}%
-          </div>
-        </div>
-      </div>
-
       <div className="overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow className="border-border/50 hover:bg-muted/30">
               <TableHead>Token</TableHead>
-              <TableHead className="text-right">Total Pembelian</TableHead>
-              <TableHead className="text-right">Jumlah Token</TableHead>
-              <TableHead className="text-right">Take Profit</TableHead>
-              <TableHead className="text-right">Profit Berjalan</TableHead>
+              <TableHead className="text-right">Total Pembelian (Today)</TableHead>
+              <TableHead className="text-right">Jumlah Token (Today)</TableHead>
+              <TableHead className="text-right">Profit Berjalan (Today)</TableHead>
               <TableHead className="text-right">Total Profit</TableHead>
               <TableHead className="text-right">PNL %</TableHead>
               <TableHead className="text-center">Chart</TableHead>
@@ -151,13 +116,13 @@ export const TodayTransactions = ({ walletAddress }: TodayTransactionsProps) => 
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
+                <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
                   Loading today's transactions...
                 </TableCell>
               </TableRow>
             ) : transactions.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
+                <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
                   No transactions found for today
                 </TableCell>
               </TableRow>
@@ -182,9 +147,6 @@ export const TodayTransactions = ({ walletAddress }: TodayTransactionsProps) => 
                     <div className="text-sm text-muted-foreground">{formatCurrency(tx.totalBuyUSD)}</div>
                   </TableCell>
                   <TableCell className="text-right">{formatNumber(tx.quantity)}</TableCell>
-                  <TableCell className="text-right">
-                    <div className="text-destructive font-medium">{formatNumber(tx.soldQuantity || 0)}</div>
-                  </TableCell>
                   <TableCell className="text-right">
                     <span className={tx.profitUSD >= 0 ? "text-success" : "text-destructive"}>
                       {formatCurrency(tx.profitUSD)}

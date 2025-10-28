@@ -57,6 +57,7 @@ serve(async (req) => {
 
     // Process transfers to identify buys (incoming tokens)
     const tokenMap = new Map();
+    const CHAIN = PULSECHAIN_CHAIN_ID;
 
     if (transfersData.result) {
       for (const transfer of transfersData.result) {
@@ -80,13 +81,31 @@ serve(async (req) => {
               totalProfitUSD: 0,
               pnlPercent: 0,
               chartLink: `https://dexscreener.com/pulsechain/${tokenAddress}`,
+              transactions: [],
             });
           }
 
           const token = tokenMap.get(tokenAddress);
           token.quantity += value;
+          token.transactions.push(transfer);
         }
       }
+    }
+
+    // Get PLS price first for USD calculations
+    let plsPrice = 0;
+    try {
+      const plsPriceResponse = await fetch(
+        `https://api.dexscreener.com/latest/dex/tokens/${WPLS_ADDRESS}`
+      );
+      if (plsPriceResponse.ok) {
+        const plsPriceData = await plsPriceResponse.json();
+        if (plsPriceData.pairs && plsPriceData.pairs.length > 0) {
+          plsPrice = parseFloat(plsPriceData.pairs[0].priceUsd || '0');
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching PLS price:', error);
     }
 
     // Fetch current prices and calculate PnL
@@ -105,45 +124,55 @@ serve(async (req) => {
             const pair = dexData.pairs[0];
             tx.currentPrice = parseFloat(pair.priceUsd || '0');
             tx.tokenLogo = tx.tokenLogo || pair.info?.imageUrl || '';
-            
-            // Calculate buy value based on current price (approximation since we don't have historical prices)
-            const currentValue = tx.quantity * tx.currentPrice;
-            tx.totalBuyUSD = currentValue; // Simplified - ideally would use buy price
-            tx.totalBuyNative = currentValue / (pair.priceNative || 1);
-            
-            // For today's buys, profit is the difference from entry
-            tx.profitUSD = 0; // Same day buys typically haven't changed much
-            tx.totalProfitUSD = 0;
-            tx.pnlPercent = 0;
           }
         }
 
-        // Try to get historical buy price from Moralis token price API
-        try {
-          const priceResponse = await fetch(
-            `https://deep-index.moralis.io/api/v2.2/erc20/${tx.tokenAddress}/price?chain=${PULSECHAIN_CHAIN_ID}`,
-            {
-              headers: {
-                'X-API-Key': moralisApiKey,
-                'accept': 'application/json',
-              },
+        // Calculate actual buy value by fetching transaction details
+        let totalNativeSpent = 0;
+        for (const transfer of tx.transactions) {
+          try {
+            const txHash = transfer.transaction_hash;
+            const txResponse = await fetch(
+              `https://deep-index.moralis.io/api/v2.2/transaction/${txHash}?chain=${CHAIN}`,
+              {
+                headers: {
+                  'X-API-Key': moralisApiKey,
+                  'accept': 'application/json',
+                },
+              }
+            );
+            
+            if (txResponse.ok) {
+              const txData = await txResponse.json();
+              // Get the value sent in the transaction (in native currency)
+              if (txData.value) {
+                const nativeValue = parseFloat(txData.value) / 1e18;
+                totalNativeSpent += nativeValue;
+              }
             }
-          );
-          
-          if (priceResponse.ok) {
-            const priceData = await priceResponse.json();
-            const buyPrice = parseFloat(priceData.usdPrice || '0');
-            if (buyPrice > 0) {
-              tx.totalBuyUSD = tx.quantity * buyPrice;
-              const currentValue = tx.quantity * tx.currentPrice;
-              tx.profitUSD = currentValue - tx.totalBuyUSD;
-              tx.totalProfitUSD = tx.profitUSD;
-              tx.pnlPercent = tx.totalBuyUSD > 0 ? (tx.profitUSD / tx.totalBuyUSD) * 100 : 0;
-            }
+          } catch (error) {
+            console.error(`Error fetching tx ${transfer.transaction_hash}:`, error);
           }
-        } catch (error) {
-          console.error(`Error fetching price for ${tx.tokenAddress}:`, error);
         }
+
+        tx.totalBuyNative = totalNativeSpent;
+        tx.totalBuyUSD = totalNativeSpent * plsPrice;
+
+        // If we couldn't get transaction values, estimate from token quantity
+        if (tx.totalBuyUSD === 0 && tx.currentPrice > 0) {
+          tx.totalBuyUSD = tx.quantity * tx.currentPrice;
+          tx.totalBuyNative = tx.totalBuyUSD / (plsPrice || 1);
+        }
+
+        // Calculate profit
+        const currentValue = tx.quantity * tx.currentPrice;
+        tx.profitUSD = currentValue - tx.totalBuyUSD;
+        tx.totalProfitUSD = tx.profitUSD;
+        tx.pnlPercent = tx.totalBuyUSD > 0 ? (tx.profitUSD / tx.totalBuyUSD) * 100 : 0;
+
+        // Remove transactions array from final output
+        delete tx.transactions;
+
       } catch (error) {
         console.error(`Error processing token ${tx.tokenAddress}:`, error);
       }

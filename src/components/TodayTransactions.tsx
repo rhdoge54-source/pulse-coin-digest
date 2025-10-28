@@ -58,10 +58,6 @@ export const TodayTransactions = ({ walletAddress }: TodayTransactionsProps) => 
 
   useEffect(() => {
     fetchTodayData();
-    
-    // Auto-refresh every 30 seconds
-    const interval = setInterval(fetchTodayData, 30000);
-    return () => clearInterval(interval);
   }, [walletAddress]);
 
   const formatCurrency = (value: number) => {

@@ -58,10 +58,6 @@ export const PortfolioSummary = ({ walletAddress }: PortfolioSummaryProps) => {
 
   useEffect(() => {
     fetchPortfolioData();
-    
-    // Auto-refresh every 30 seconds
-    const interval = setInterval(fetchPortfolioData, 30000);
-    return () => clearInterval(interval);
   }, [walletAddress]);
 
   const formatCurrency = (value: number) => {

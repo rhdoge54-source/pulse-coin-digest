@@ -55,7 +55,7 @@ serve(async (req) => {
     const transfersData = await transfersResponse.json();
     console.log(`Received ${transfersData.result?.length || 0} token transfers`);
 
-    // Process transfers to identify buys (incoming tokens)
+    // Process transfers to identify buys and sells
     const tokenMap = new Map();
     const CHAIN = PULSECHAIN_CHAIN_ID;
 
@@ -63,9 +63,9 @@ serve(async (req) => {
       for (const transfer of transfersData.result) {
         const tokenAddress = transfer.address;
         const isIncoming = transfer.to_address?.toLowerCase() === walletAddress.toLowerCase();
+        const isOutgoing = transfer.from_address?.toLowerCase() === walletAddress.toLowerCase();
         
-        // Only track incoming transfers (buys) for today
-        if (isIncoming && tokenAddress) {
+        if ((isIncoming || isOutgoing) && tokenAddress) {
           const value = parseFloat(transfer.value) / Math.pow(10, parseInt(transfer.token_decimals || '18'));
           
           if (!tokenMap.has(tokenAddress)) {
@@ -75,19 +75,29 @@ serve(async (req) => {
               tokenLogo: transfer.token_logo || '',
               totalBuyUSD: 0,
               totalBuyNative: 0,
-              quantity: 0,
+              buyQuantity: 0,
+              sellQuantity: 0,
               currentPrice: 0,
               profitUSD: 0,
               totalProfitUSD: 0,
               pnlPercent: 0,
               chartLink: `https://dexscreener.com/pulsechain/${tokenAddress}`,
-              transactions: [],
+              buyTransactions: [],
+              sellTransactions: [],
             });
           }
 
           const token = tokenMap.get(tokenAddress);
-          token.quantity += value;
-          token.transactions.push(transfer);
+          
+          if (isIncoming) {
+            token.buyQuantity += value;
+            token.buyTransactions.push(transfer);
+          }
+          
+          if (isOutgoing) {
+            token.sellQuantity += value;
+            token.sellTransactions.push(transfer);
+          }
         }
       }
     }
@@ -109,7 +119,13 @@ serve(async (req) => {
     }
 
     // Fetch current prices and calculate PnL
-    const transactions = Array.from(tokenMap.values());
+    const allTokens = Array.from(tokenMap.values());
+    
+    // Filter only tokens with buys today
+    const transactions = allTokens.filter(tx => tx.buyQuantity > 0);
+    
+    let totalBuyUSDSum = 0;
+    let totalCurrentValueSum = 0;
     
     for (const tx of transactions) {
       try {
@@ -129,7 +145,7 @@ serve(async (req) => {
 
         // Calculate actual buy value by fetching transaction details
         let totalNativeSpent = 0;
-        for (const transfer of tx.transactions) {
+        for (const transfer of tx.buyTransactions) {
           try {
             const txHash = transfer.transaction_hash;
             const txResponse = await fetch(
@@ -160,26 +176,50 @@ serve(async (req) => {
 
         // If we couldn't get transaction values, estimate from token quantity
         if (tx.totalBuyUSD === 0 && tx.currentPrice > 0) {
-          tx.totalBuyUSD = tx.quantity * tx.currentPrice;
+          tx.totalBuyUSD = tx.buyQuantity * tx.currentPrice;
           tx.totalBuyNative = tx.totalBuyUSD / (plsPrice || 1);
         }
 
         // Calculate profit
-        const currentValue = tx.quantity * tx.currentPrice;
+        const remainingQuantity = tx.buyQuantity - tx.sellQuantity;
+        const currentValue = remainingQuantity * tx.currentPrice;
         tx.profitUSD = currentValue - tx.totalBuyUSD;
         tx.totalProfitUSD = tx.profitUSD;
         tx.pnlPercent = tx.totalBuyUSD > 0 ? (tx.profitUSD / tx.totalBuyUSD) * 100 : 0;
 
-        // Remove transactions array from final output
-        delete tx.transactions;
+        // Add to summary totals
+        totalBuyUSDSum += tx.totalBuyUSD;
+        totalCurrentValueSum += currentValue;
+
+        // Set quantity to remaining quantity for display
+        tx.quantity = remainingQuantity;
+        tx.soldQuantity = tx.sellQuantity;
+
+        // Remove transactions arrays from final output
+        delete tx.buyTransactions;
+        delete tx.sellTransactions;
+        delete tx.buyQuantity;
+        delete tx.sellQuantity;
 
       } catch (error) {
         console.error(`Error processing token ${tx.tokenAddress}:`, error);
       }
     }
 
+    // Calculate summary
+    const totalProfitUSD = totalCurrentValueSum - totalBuyUSDSum;
+    const totalProfitPercent = totalBuyUSDSum > 0 ? (totalProfitUSD / totalBuyUSDSum) * 100 : 0;
+
     return new Response(
-      JSON.stringify({ transactions }),
+      JSON.stringify({ 
+        transactions,
+        summary: {
+          totalBuyUSD: totalBuyUSDSum,
+          totalCurrentValue: totalCurrentValueSum,
+          totalProfitUSD: totalProfitUSD,
+          totalProfitPercent: totalProfitPercent
+        }
+      }),
       { 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 200,

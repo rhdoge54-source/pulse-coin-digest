@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
-import { Calendar, RefreshCw, TrendingUp, ExternalLink } from "lucide-react";
+import { RefreshCw, TrendingUp, TrendingDown, Copy, ExternalLink, DollarSign } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 
@@ -11,12 +10,21 @@ interface TokenTransaction {
   tokenLogo: string;
   totalBuyUSD: number;
   totalBuyNative: number;
-  quantity: number;
+  buyQuantity: number;
+  sellQuantity: number;
   currentPrice: number;
+  currentValue: number;
   profitUSD: number;
-  totalProfitUSD: number;
   pnlPercent: number;
+  priceChange24h: number;
   chartLink: string;
+}
+
+interface DailySummary {
+  totalBuyUSD: number;
+  totalCurrentValue: number;
+  totalProfitUSD: number;
+  totalProfitPercent: number;
 }
 
 interface TodayTransactionsProps {
@@ -25,8 +33,13 @@ interface TodayTransactionsProps {
 
 export const TodayTransactions = ({ walletAddress }: TodayTransactionsProps) => {
   const [transactions, setTransactions] = useState<TokenTransaction[]>([]);
+  const [summary, setSummary] = useState<DailySummary>({
+    totalBuyUSD: 0,
+    totalCurrentValue: 0,
+    totalProfitUSD: 0,
+    totalProfitPercent: 0
+  });
   const [loading, setLoading] = useState(true);
-  const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
 
   const fetchTodayData = async () => {
     setLoading(true);
@@ -38,17 +51,22 @@ export const TodayTransactions = ({ walletAddress }: TodayTransactionsProps) => 
       if (error) throw error;
       
       setTransactions(data?.transactions || []);
-      setLastUpdate(new Date());
+      setSummary(data?.summary || {
+        totalBuyUSD: 0,
+        totalCurrentValue: 0,
+        totalProfitUSD: 0,
+        totalProfitPercent: 0
+      });
       
       toast({
-        title: "Data Updated",
-        description: "Today's transactions loaded successfully",
+        title: "Data Diperbarui",
+        description: "Data hari ini berhasil dimuat",
       });
     } catch (error) {
       console.error("Error fetching today's transactions:", error);
       toast({
         title: "Error",
-        description: "Failed to load transaction data",
+        description: "Gagal memuat data transaksi",
         variant: "destructive",
       });
     } finally {
@@ -61,126 +79,172 @@ export const TodayTransactions = ({ walletAddress }: TodayTransactionsProps) => 
   }, [walletAddress]);
 
   const formatCurrency = (value: number) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(value);
+    if (value >= 1000000) {
+      return `$${(value / 1000000).toFixed(2)}M`;
+    } else if (value >= 1000) {
+      return `$${(value / 1000).toFixed(2)}K`;
+    }
+    return `$${value.toFixed(2)}`;
   };
 
   const formatNumber = (value: number) => {
-    return new Intl.NumberFormat('en-US', {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 6,
-    }).format(value);
+    if (value >= 1000000) {
+      return `${(value / 1000000).toFixed(2)}M`;
+    } else if (value >= 1000) {
+      return `${(value / 1000).toFixed(2)}K`;
+    }
+    return value.toFixed(2);
+  };
+
+  const formatPrice = (value: number) => {
+    if (value < 0.000001) {
+      return `$${value.toFixed(10)}`;
+    } else if (value < 0.01) {
+      return `$${value.toFixed(6)}`;
+    }
+    return `$${value.toFixed(4)}`;
+  };
+
+  const copyAddress = (address: string) => {
+    navigator.clipboard.writeText(address);
+    toast({
+      title: "Tersalin",
+      description: "Alamat token disalin ke clipboard",
+    });
   };
 
   return (
-    <div className="gradient-card rounded-xl p-6 card-shadow border border-border/50">
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-2">
-          <Calendar className="w-5 h-5 text-primary" />
-          <h2 className="text-xl font-semibold">Hari Ini (WIB)</h2>
+    <div className="min-h-screen bg-background p-6 max-w-7xl mx-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <h1 className="text-2xl font-bold mb-2">Wallet</h1>
+          <div className="text-4xl font-bold">{formatCurrency(summary.totalCurrentValue)}</div>
+          {!loading && (
+            <div className="mt-2 flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">Pembelian Awal:</span>
+              <span className="text-sm font-semibold">{formatCurrency(summary.totalBuyUSD)}</span>
+              <span className="text-sm text-muted-foreground">•</span>
+              <span className="text-sm text-muted-foreground">Profit:</span>
+              <span className={`text-sm font-semibold ${summary.totalProfitUSD >= 0 ? 'text-success' : 'text-destructive'}`}>
+                {formatCurrency(summary.totalProfitUSD)} ({summary.totalProfitPercent >= 0 ? '+' : ''}{summary.totalProfitPercent.toFixed(2)}%)
+              </span>
+            </div>
+          )}
         </div>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-muted-foreground">
-            Last update: {lastUpdate.toLocaleTimeString('id-ID')}
-          </span>
-          <Button 
-            variant="outline" 
-            size="sm"
+        <div className="flex items-center gap-3">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="rounded-full"
+          >
+            <DollarSign className="w-5 h-5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="rounded-full"
             onClick={fetchTodayData}
             disabled={loading}
-            className="border-border/50"
           >
-            <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
+            <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
           </Button>
         </div>
       </div>
 
-      <div className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow className="border-border/50 hover:bg-muted/30">
-              <TableHead>Token</TableHead>
-              <TableHead className="text-right">Total Pembelian (Today)</TableHead>
-              <TableHead className="text-right">Jumlah Token (Today)</TableHead>
-              <TableHead className="text-right">Profit Berjalan (Today)</TableHead>
-              <TableHead className="text-right">Total Profit</TableHead>
-              <TableHead className="text-right">PNL %</TableHead>
-              <TableHead className="text-center">Chart</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {loading ? (
-              <TableRow>
-                <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
-                  Loading today's transactions...
-                </TableCell>
-              </TableRow>
-            ) : transactions.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
-                  No transactions found for today
-                </TableCell>
-              </TableRow>
-            ) : (
-              transactions.map((tx, index) => (
-                <TableRow key={index} className="border-border/50 hover:bg-muted/30 transition-colors">
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      {tx.tokenLogo && (
-                        <img src={tx.tokenLogo} alt={tx.tokenSymbol} className="w-8 h-8 rounded-full" />
-                      )}
-                      <div>
-                        <div className="font-medium">{tx.tokenSymbol}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {tx.tokenAddress.slice(0, 6)}...{tx.tokenAddress.slice(-4)}
-                        </div>
-                      </div>
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div>{formatNumber(tx.totalBuyNative)} PLS</div>
-                    <div className="text-sm text-muted-foreground">{formatCurrency(tx.totalBuyUSD)}</div>
-                  </TableCell>
-                  <TableCell className="text-right">{formatNumber(tx.quantity)}</TableCell>
-                  <TableCell className="text-right">
-                    <span className={tx.profitUSD >= 0 ? "text-success" : "text-destructive"}>
-                      {formatCurrency(tx.profitUSD)}
-                    </span>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <span className={tx.totalProfitUSD >= 0 ? "text-success" : "text-destructive"}>
-                      {formatCurrency(tx.totalProfitUSD)}
-                    </span>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <span className={tx.pnlPercent >= 0 ? "text-success font-semibold" : "text-destructive font-semibold"}>
-                      {tx.pnlPercent >= 0 ? '+' : ''}{tx.pnlPercent.toFixed(2)}%
-                    </span>
-                  </TableCell>
-                  <TableCell className="text-center">
-                    <Button 
-                      variant="outline" 
-                      size="sm"
-                      className="bg-primary/10 hover:bg-primary/20 border-primary/30"
-                      asChild
-                    >
-                      <a href={tx.chartLink} target="_blank" rel="noopener noreferrer">
-                        <TrendingUp className="w-3 h-3 mr-1" />
-                        DexScreener
-                        <ExternalLink className="w-3 h-3 ml-1" />
+      {/* Daily Movers */}
+      <div>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold">Hari Ini (WIB)</h2>
+        </div>
+
+        {loading ? (
+          <div className="text-center py-12 text-muted-foreground">
+            Memuat transaksi hari ini...
+          </div>
+        ) : transactions.length === 0 ? (
+          <div className="text-center py-12 text-muted-foreground">
+            Tidak ada transaksi untuk hari ini
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {/* Header */}
+            <div className="grid grid-cols-[200px_1fr_120px_120px] gap-4 px-4 py-2 text-sm text-muted-foreground">
+              <div>Token</div>
+              <div className="text-right">Price</div>
+              <div className="text-right">Amount</div>
+              <div className="text-right">Value</div>
+            </div>
+
+            {/* Token List */}
+            {transactions.map((tx, index) => (
+              <div 
+                key={index} 
+                className="grid grid-cols-[200px_1fr_120px_120px] gap-4 px-4 py-4 rounded-lg hover:bg-muted/30 transition-colors items-center"
+              >
+                {/* Token Info */}
+                <div className="flex items-center gap-3">
+                  <div className="relative">
+                    {tx.tokenLogo && (
+                      <img 
+                        src={tx.tokenLogo} 
+                        alt={tx.tokenSymbol} 
+                        className="w-10 h-10 rounded-full"
+                      />
+                    )}
+                  </div>
+                  <div>
+                    <div className="font-semibold">{tx.tokenSymbol}</div>
+                    <div className="flex items-center gap-2 mt-1">
+                      <button 
+                        onClick={() => copyAddress(tx.tokenAddress)}
+                        className="text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        <Copy className="w-3 h-3" />
+                      </button>
+                      <a 
+                        href={tx.chartLink} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        <ExternalLink className="w-3 h-3" />
                       </a>
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
+                      <button className="text-muted-foreground hover:text-foreground transition-colors">
+                        <RefreshCw className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Price */}
+                <div className="text-right">
+                  <div className="font-medium">{formatPrice(tx.currentPrice)}</div>
+                  <div className={`text-sm flex items-center justify-end gap-1 ${tx.priceChange24h >= 0 ? 'text-success' : 'text-destructive'}`}>
+                    {tx.priceChange24h >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                    {Math.abs(tx.priceChange24h).toFixed(2)}%
+                  </div>
+                </div>
+
+                {/* Amount */}
+                <div className="text-right">
+                  <div className="font-medium">{formatNumber(tx.buyQuantity - tx.sellQuantity)}</div>
+                  <div className="text-sm text-muted-foreground">
+                    Buy: {formatNumber(tx.buyQuantity)}
+                  </div>
+                </div>
+
+                {/* Value */}
+                <div className="text-right">
+                  <div className="font-semibold text-lg">{formatCurrency(tx.currentValue)}</div>
+                  <div className={`text-sm ${tx.profitUSD >= 0 ? 'text-success' : 'text-destructive'}`}>
+                    {tx.profitUSD >= 0 ? '+' : ''}{formatCurrency(tx.profitUSD)}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
